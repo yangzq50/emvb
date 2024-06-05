@@ -251,14 +251,6 @@ public:
                 }
             }
         }
-        // for (auto &uq : unique_centroids)
-        // {
-        //     auto current_list = centroids_to_pid[uq];
-        //     for (auto &doc_id : current_list)
-        //     {
-        //         set_bit_64(doc_id);
-        //     }
-        // }
 
         fill(bitvectors_centroids.begin(), bitvectors_centroids.end(), (size_t)0);
 
@@ -269,7 +261,7 @@ public:
 
     /// Starting functions for phase 2.
 
-    vector<numDocsType> compute_hit_frequency(vector<numDocsType> &candidate_documents, const float th, const size_t k_centroids)
+    vector<numDocsType> compute_hit_frequency(vector<numDocsType> &candidate_documents, const size_t k_centroids)
     {
         if (k_centroids >= candidate_documents.size())
         {
@@ -289,11 +281,9 @@ public:
             auto doclen = all_doclens[doc_id];
             auto doc_offset = doc_offsets[doc_id];
 
-            vector<size_t> centroid_ids(doclen);
             uint32_t mask = 0;
             for (size_t i = 0; i < doclen; i++)
             {
-                centroid_ids[i] = centroids_assignments[doc_offset + i];
                 auto cid = centroids_assignments[doc_offset + i];
                 mask |= bitvectors[cid];
             }
@@ -318,43 +308,21 @@ public:
     /// Ending functions for phase 2.
 
     /// Starting functions for phase 3.
-    inline vector<float> compute_ip_with_centroids(const float *queries, const numDocsType doc_id)
+    inline vector<float> compute_ip_with_centroids(const numDocsType doc_id)
     {
-
         auto doclen = all_doclens[doc_id];
         auto doc_offset = doc_offsets[doc_id];
-        vector<size_t> centroid_ids(doclen);
-        for (size_t i = 0; i < doclen; i++)
-        {
-            centroid_ids[i] = centroids_assignments[i + doc_offset];
-        }
-
         vector<float> centroid_distances(M * doclen);
-        for (size_t j = 0; j < doclen; j++)
+        for (size_t j = 0; j < doclen; ++j)
         {
-            size_t centroid_id = centroid_ids[j];
+            size_t centroid_id = centroids_assignments[j + doc_offset];
             for (size_t i = 0; i < M; i++)
             {
                 // writing transposed
                 centroid_distances[j * M + i] = centroids_scores_transposed[centroid_id * M + i];
             }
         }
-
         return centroid_distances;
-    }
-
-    void transpose_centroids_scores_mkl_oplace()
-    {
-        float alpha = 1.0;
-        mkl_somatcopy('R' /* row-major ordering */,
-                      'T' /* A will be transposed */,
-                      M /* rows */,
-                      n_centroids /* cols */,
-                      alpha /* scales the input matrix */,
-                      centroids_scores.data() /* source matrix */,
-                      n_centroids /* src_stride */,
-                      centroids_scores_transposed.data(),
-                      M /* dst_stride */);
     }
 
     inline float compute_score_by_column_reduction(const vector<float> &centroid_distances, const size_t doclen, const size_t M)
@@ -380,21 +348,24 @@ public:
         return _mm512_reduce_add_ps(half_sum);
     }
 
-    vector<numDocsType> second_stage_filtering(const float *queries_data, const globalIdxType q_start, const vector<numDocsType> &doc_ids, const size_t n_documents)
+    vector<numDocsType> second_stage_filtering(const vector<numDocsType> &doc_ids, const size_t n_documents)
     {
-        transpose_centroids_scores_mkl_oplace();
+        mkl_somatcopy('R', /* row-major ordering */
+                      'T', /* A will be transposed */
+                      M, /* rows */
+                      n_centroids, /* cols */
+                      1.0, /* scales the input matrix */
+                      centroids_scores.data(), /* source matrix */
+                      n_centroids, /* src_stride */
+                      centroids_scores_transposed.data(),
+                      M /* dst_stride */);
         priority_queue<tuple<numDocsType, valType>, vector<tuple<numDocsType, valType>>, Compare> min_heap;
         // auto heap = HeapIntegers(n_documents);
 
-        for (size_t doc_idx = 0; doc_idx < doc_ids.size(); doc_idx++)
+        for (auto doc_id : doc_ids)
         {
-
-            auto doc_id = doc_ids[doc_idx];
             auto doclen = all_doclens[doc_id];
-            auto doc_offset = doc_offsets[doc_id];
-
-            auto centroid_distances = compute_ip_with_centroids(queries_data + q_start, doc_id);
-
+            auto centroid_distances = compute_ip_with_centroids(doc_id);
             auto score = compute_score_by_column_reduction(centroid_distances, doclen, M);
             // TODO: here, replace with heap (Maybe)
 
@@ -411,8 +382,6 @@ public:
                 {
                     // here, save the centroid_scores
                     map_doc_centroid_scores[doc_id] = centroid_distances;
-
-                    tuple<numDocsType, valType> t = min_heap.top();
                     map_doc_centroid_scores.erase(get<0>(t));
                     min_heap.pop();
                     min_heap.push(make_tuple(doc_id, score));
@@ -605,12 +574,7 @@ public:
                     for (size_t j = 0; j < doclen; j++)
                     {
                         distances[i * doclen + j] += buffer_for_distances[j];
-                        // cout<< buffer_for_distances[j] << " "<< pq_distances[i * doclen + j] << "\n";
                     }
-                    // for (size_t j = 0; j < doclen; j++)
-                    // {
-                    //     distances[i * doclen + j] += pq_distances[i * doclen + j];
-                    // }
                     maxs[i] = *std::max_element(&distances[i * doclen], &distances[(i + 1) * doclen]);
                 }
                 else
@@ -623,7 +587,6 @@ public:
                     for (size_t idx = 0; idx < (current_indexes - this->buffer_centroids); idx++)
                     {
                         auto j = this->buffer_centroids[idx];
-                        // distances[i * doclen + j] += pq_distances[i * doclen + j];
                         distances[i * doclen + j] += pq.compute_distances_one_qt_one_doc(doc_offset, doclen, i, j);
                     }
 

@@ -102,10 +102,10 @@ int main(int argc, char **argv)
 
 
         // PHASE 2: candidate document filtering
-        auto selected_docs = document_scorer.compute_hit_frequency(candidate_docs, thresh, n_doc_to_score);
+        auto selected_docs = document_scorer.compute_hit_frequency(candidate_docs, n_doc_to_score);
 
         //  PHASE 3: second stage filtering
-        auto selected_docs_2nd = document_scorer.second_stage_filtering(loaded_query_data, q_start, selected_docs, out_second_stage);
+        auto selected_docs_2nd = document_scorer.second_stage_filtering(selected_docs, out_second_stage);
 
         // PHASE 4: document scoring
         auto query_res = document_scorer.compute_topk_documents_selected(loaded_query_data, q_start, selected_docs_2nd, k, thresh_query);
